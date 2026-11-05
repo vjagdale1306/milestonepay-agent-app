@@ -9,7 +9,9 @@
     "test": "echo \"No tests specified yet\" && exit 0"
   },
   "dependencies": {
-    "dotenv": "^16.4.7"
+    "better-sqlite3": "^13.0.3",
+    "cors": "^2.8.6",
+    "dotenv": "^16.4.7",
+    "express": "^5.3.0"
   }
 }
-

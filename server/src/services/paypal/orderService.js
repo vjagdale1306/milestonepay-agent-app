@@ -17,11 +17,12 @@ export async function createAuthorizeOrder({
   amount,
   referenceId = 'default',
   customId,
+  requestId,
   returnUrl = 'https://example.com/return',
   cancelUrl = 'https://example.com/cancel',
 }) {
   const formattedAmount = Number(amount).toFixed(2);
-  const requestId = crypto.randomUUID();
+  const reqId = requestId || crypto.randomUUID();
 
   const payload = {
     intent: 'AUTHORIZE',
@@ -45,7 +46,7 @@ export async function createAuthorizeOrder({
   const data = await paypalRequest('/v2/checkout/orders', {
     method: 'POST',
     headers: {
-      'PayPal-Request-Id': requestId,
+      'PayPal-Request-Id': reqId,
     },
     body: JSON.stringify(payload),
   });
