@@ -29,6 +29,10 @@ const selectSubmissionsStmt = db.prepare(`
   SELECT * FROM submissions WHERE milestone_id = ? ORDER BY rowid ASC
 `);
 
+const selectVerificationsStmt = db.prepare(`
+  SELECT * FROM verifications WHERE milestone_id = ? ORDER BY rowid ASC
+`);
+
 const selectAuditLogsStmt = db.prepare(`
   SELECT * FROM audit_log WHERE entity_id = ? OR entity_id IN (
     SELECT id FROM milestones WHERE project_id = ?
@@ -183,12 +187,30 @@ router.get('/:id', (req, res) => {
 
   const milestones = selectMilestonesStmt.all(id);
 
-  // Attach submissions to each milestone
-  const milestonesWithSubmissions = milestones.map((m) => {
+  // Attach submissions and verifications to each milestone
+  const milestonesWithDetails = milestones.map((m) => {
     const submissions = selectSubmissionsStmt.all(m.id);
+    const verifications = selectVerificationsStmt.all(m.id).map((v) => {
+      let parsedRequirements = [];
+      if (v.requirements) {
+        try {
+          parsedRequirements = JSON.parse(v.requirements);
+        } catch (e) {
+          parsedRequirements = [];
+        }
+      }
+
+      return {
+        ...v,
+        requirements: parsedRequirements,
+        service_error: Boolean(v.service_error),
+      };
+    });
+
     return {
       ...m,
       submissions,
+      verifications,
     };
   });
 
@@ -201,7 +223,7 @@ router.get('/:id', (req, res) => {
 
   return res.json({
     ...project,
-    milestones: milestonesWithSubmissions,
+    milestones: milestonesWithDetails,
     audit_log: auditLogs,
   });
 });

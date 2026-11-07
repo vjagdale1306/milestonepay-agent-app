@@ -16,7 +16,7 @@ export async function captureAuthorization(authorizationId, options = {}) {
     throw new Error('authorizationId is required to capture authorization.');
   }
 
-  const requestId = crypto.randomUUID();
+  const requestId = options.requestId || crypto.randomUUID();
   const payload = {
     final_capture: options.isFinal ?? true,
   };

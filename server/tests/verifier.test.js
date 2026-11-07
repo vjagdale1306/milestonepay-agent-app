@@ -57,6 +57,7 @@ test('Gemini Verifier Test Suite', async (t) => {
     assert.equal(result.decision, 'approve');
     assert.equal(result.confidence, 0.95);
     assert.equal(result.requirements.length, 2);
+    assert.equal(result.serviceError, false);
   });
 
   await t.test('Case 2: Blocks approval if met:true requirement lacks evidence', async () => {
@@ -238,6 +239,7 @@ test('Gemini Verifier Test Suite', async (t) => {
     });
 
     assert.equal(result.decision, 'needs_review');
+    assert.equal(result.serviceError, true);
     assert.match(result.feedback, /AI verification could not be completed/);
   });
 
@@ -256,6 +258,7 @@ test('Gemini Verifier Test Suite', async (t) => {
     });
 
     assert.equal(result.decision, 'needs_review');
+    assert.equal(result.serviceError, true);
     assert.match(result.feedback, /Model configuration error/);
   });
 
@@ -343,6 +346,55 @@ test('Gemini Verifier Test Suite', async (t) => {
 
     assert.ok(!capturedUrl.includes('test_dummy_key'), 'API key leaked in URL query parameters');
     assert.equal(capturedHeaders['x-goog-api-key'], 'test_dummy_key');
+  });
+
+  await t.test('Case 14: serviceError is true when API key is missing', async () => {
+    const savedGeminiKey = process.env.GEMINI_API_KEY;
+    const savedLlmKey = process.env.LLM_API_KEY;
+
+    delete process.env.GEMINI_API_KEY;
+    delete process.env.LLM_API_KEY;
+
+    try {
+      const result = await verifySubmission({
+        brief: 'Test',
+        acceptanceCriteria: 'Test',
+        submissionContent: 'code',
+      });
+
+      assert.equal(result.decision, 'needs_review');
+      assert.equal(result.serviceError, true);
+      assert.match(result.reason, /Missing API key/);
+      assert.match(result.feedback, /is not set/);
+    } finally {
+      if (savedGeminiKey === undefined) {
+        delete process.env.GEMINI_API_KEY;
+      } else {
+        process.env.GEMINI_API_KEY = savedGeminiKey;
+      }
+
+      if (savedLlmKey === undefined) {
+        delete process.env.LLM_API_KEY;
+      } else {
+        process.env.LLM_API_KEY = savedLlmKey;
+      }
+    }
+  });
+
+  await t.test('Case 15: serviceError is true on network error', async () => {
+    globalThis.fetch = async () => {
+      throw new Error('ECONNRESET socket hang up');
+    };
+
+    const result = await verifySubmission({
+      brief: 'Test',
+      acceptanceCriteria: 'Test',
+      submissionContent: 'code',
+    });
+
+    assert.equal(result.decision, 'needs_review');
+    assert.equal(result.serviceError, true);
+    assert.ok(typeof result.feedback === 'string' && result.feedback.trim().length > 0);
   });
 });
 

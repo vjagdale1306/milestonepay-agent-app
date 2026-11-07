@@ -45,6 +45,7 @@ db.exec(`
     fund_attempt_count INTEGER NOT NULL DEFAULT 0,
     paypal_order_id TEXT,
     authorization_id TEXT,
+    capture_id TEXT,
     authorized_at DATETIME,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -61,6 +62,22 @@ db.exec(`
     FOREIGN KEY (milestone_id) REFERENCES milestones(id) ON DELETE CASCADE
   );
 
+  CREATE TABLE IF NOT EXISTS verifications (
+    id TEXT PRIMARY KEY,
+    milestone_id TEXT NOT NULL,
+    submission_id TEXT NOT NULL,
+    decision TEXT NOT NULL,
+    model_decision TEXT,
+    confidence REAL,
+    requirements TEXT,
+    feedback TEXT,
+    reason TEXT,
+    service_error INTEGER NOT NULL DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (milestone_id) REFERENCES milestones(id) ON DELETE CASCADE,
+    FOREIGN KEY (submission_id) REFERENCES submissions(id) ON DELETE CASCADE
+  );
+
   CREATE TABLE IF NOT EXISTS audit_log (
     id TEXT PRIMARY KEY,
     entity_type TEXT NOT NULL,
@@ -71,7 +88,18 @@ db.exec(`
     details TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
+
+  CREATE INDEX IF NOT EXISTS idx_milestones_project_id ON milestones(project_id);
+  CREATE INDEX IF NOT EXISTS idx_submissions_milestone_id ON submissions(milestone_id);
+  CREATE INDEX IF NOT EXISTS idx_verifications_milestone_id ON verifications(milestone_id);
 `);
+
+// Migration: check if capture_id exists via PRAGMA table_info, only ALTER TABLE if missing
+const milestoneCols = db.prepare('PRAGMA table_info(milestones)').all();
+const hasCaptureId = milestoneCols.some((col) => col.name === 'capture_id');
+if (!hasCaptureId) {
+  db.exec('ALTER TABLE milestones ADD COLUMN capture_id TEXT');
+}
 
 // Prepared statement for writing audit log entries
 const insertAuditLogStmt = db.prepare(`

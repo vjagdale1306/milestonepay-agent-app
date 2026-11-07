@@ -90,6 +90,7 @@ export async function verifySubmission({
       modelDecision: 'needs_review',
       reason: 'Missing API key configuration.',
       feedback: 'Verification configuration error: GEMINI_API_KEY (or LLM_API_KEY) is not set.',
+      serviceError: true,
     };
   }
 
@@ -236,6 +237,7 @@ ${endDelimiter}`;
           modelDecision: 'needs_review',
           reason: `Model '${model}' was not found.`,
           feedback: `Model configuration error: Model '${model}' not found on the Gemini API. Please check GEMINI_MODEL.`,
+          serviceError: true,
         };
       }
 
@@ -259,6 +261,7 @@ ${endDelimiter}`;
       modelDecision: 'needs_review',
       reason: 'AI verification failed or encountered an error.',
       feedback: `AI verification could not be completed: ${safeErrorSnippet}.${truncationNote}`,
+      serviceError: true,
     };
   }
 
@@ -296,6 +299,7 @@ ${endDelimiter}`;
     modelDecision: modelHintDecision,
     reason,
     feedback: feedbackText || 'No detailed feedback provided.',
+    serviceError: false,
   };
 }
 
