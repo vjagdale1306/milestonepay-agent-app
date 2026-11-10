@@ -217,6 +217,7 @@ test('Gemini Verifier Test Suite', async (t) => {
       brief: 'Feature A',
       acceptanceCriteria: 'Feature A',
       submissionContent: 'working feature',
+      options: { retryDelays: [0, 0] },
     });
 
     assert.equal(callCount, 2);
@@ -236,11 +237,12 @@ test('Gemini Verifier Test Suite', async (t) => {
       brief: 'Test',
       acceptanceCriteria: 'Test',
       submissionContent: 'code',
+      options: { retryDelays: [0, 0] },
     });
 
     assert.equal(result.decision, 'needs_review');
     assert.equal(result.serviceError, true);
-    assert.match(result.feedback, /AI verification could not be completed/);
+    assert.match(result.feedback, /The AI verifier is temporarily busy/);
   });
 
   await t.test('Case 9: Model not found (HTTP 404) returns needs_review with clear configuration error', async () => {
@@ -390,11 +392,103 @@ test('Gemini Verifier Test Suite', async (t) => {
       brief: 'Test',
       acceptanceCriteria: 'Test',
       submissionContent: 'code',
+      options: { retryDelays: [0, 0] },
     });
 
     assert.equal(result.decision, 'needs_review');
     assert.equal(result.serviceError, true);
     assert.ok(typeof result.feedback === 'string' && result.feedback.trim().length > 0);
+  });
+
+  await t.test('Case 16: Temporary HTTP 503 recovers on retry', async () => {
+    let callCount = 0;
+    globalThis.fetch = async () => {
+      callCount++;
+      if (callCount === 1) {
+        return {
+          ok: false,
+          status: 503,
+          text: async () => '{"error": {"message": "Model is overloaded"}}',
+        };
+      }
+      return makeGeminiResponse({
+        requirements: [{ requirement: 'Feature B', met: true, evidence: 'Verified' }],
+        confidence: 0.95,
+        decision: 'approve',
+        feedback: 'Passed on attempt 2',
+      });
+    };
+
+    const result = await verifySubmission({
+      brief: 'Feature B',
+      acceptanceCriteria: 'Feature B',
+      submissionContent: 'code',
+      options: { retryDelays: [0, 0] },
+    });
+
+    assert.equal(callCount, 2);
+    assert.equal(result.decision, 'approve');
+    assert.equal(result.serviceError, false);
+  });
+
+  await t.test('Case 17: HTTP 503 on primary model recovers on fallback model', async () => {
+    const attemptedModels = [];
+    globalThis.fetch = async (url) => {
+      attemptedModels.push(url);
+      if (url.includes('gemini-fallback')) {
+        return makeGeminiResponse({
+          requirements: [{ requirement: 'Feature C', met: true, evidence: 'Verified on fallback' }],
+          confidence: 0.9,
+          decision: 'approve',
+          feedback: 'Passed via fallback model',
+        });
+      }
+      return {
+        ok: false,
+        status: 503,
+        text: async () => '{"error": "high demand"}',
+      };
+    };
+
+    const result = await verifySubmission({
+      brief: 'Feature C',
+      acceptanceCriteria: 'Feature C',
+      submissionContent: 'code',
+      options: {
+        model: 'gemini-primary',
+        fallbackModel: 'gemini-fallback',
+        retryDelays: [0, 0],
+      },
+    });
+
+    assert.equal(attemptedModels.length, 4); // 3 primary attempts + 1 fallback
+    assert.ok(attemptedModels[3].includes('gemini-fallback'));
+    assert.equal(result.decision, 'approve');
+    assert.equal(result.serviceError, false);
+  });
+
+  await t.test('Case 18: Persistent HTTP 503 everywhere returns friendly message with no raw JSON', async () => {
+    globalThis.fetch = async () => ({
+      ok: false,
+      status: 503,
+      text: async () => '{"error": {"code": 503, "status": "UNAVAILABLE", "message": "High demand, please retry"}}',
+    });
+
+    const result = await verifySubmission({
+      brief: 'Feature D',
+      acceptanceCriteria: 'Feature D',
+      submissionContent: 'code',
+      options: {
+        fallbackModel: 'gemini-fallback-test',
+        retryDelays: [0, 0],
+      },
+    });
+
+    assert.equal(result.decision, 'needs_review');
+    assert.equal(result.serviceError, true);
+    assert.match(result.feedback, /^The AI verifier is temporarily busy\. Please retry in a minute\./);
+    assert.ok(!result.feedback.includes('{'), 'Raw JSON must not be present in feedback');
+    assert.ok(!result.feedback.includes('UNAVAILABLE'), 'Raw status code must not be present in feedback');
   });
 });
 

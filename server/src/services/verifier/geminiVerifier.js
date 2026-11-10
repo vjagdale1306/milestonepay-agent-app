@@ -3,7 +3,11 @@ import crypto from 'crypto';
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 const DEFAULT_MODEL = 'gemini-3.6-flash';
 const MAX_SUBMISSION_LENGTH = 30000;
-const DEFAULT_TIMEOUT_MS = 25000;
+const DEFAULT_CALL_TIMEOUT_MS = 25000;
+const DEFAULT_OVERALL_BUDGET_MS = 70000;
+const DEFAULT_RETRY_DELAYS = [1500, 4000];
+
+const TEMPORARY_STATUS_CODES = new Set([429, 500, 502, 503, 504]);
 
 /**
  * Enforce deterministic decision rules on verified output.
@@ -72,8 +76,8 @@ function determineDecision({ requirements, confidence, modelHintDecision }) {
  * @param {string} params.brief - Milestone brief
  * @param {string} params.acceptanceCriteria - Acceptance criteria
  * @param {string} params.submissionContent - Untrusted submission content
- * @param {Object} [params.options] - Optional overrides (timeout, model)
- * @returns {Promise<{ requirements: Array, confidence: number, decision: string, modelDecision: string, reason: string, feedback: string }>}
+ * @param {Object} [params.options] - Optional overrides (timeout, model, retryDelays, etc.)
+ * @returns {Promise<{ requirements: Array, confidence: number, decision: string, modelDecision: string, reason: string, feedback: string, serviceError: boolean }>}
  */
 export async function verifySubmission({
   brief = '',
@@ -94,8 +98,13 @@ export async function verifySubmission({
     };
   }
 
-  const model = options.model || process.env.GEMINI_MODEL || DEFAULT_MODEL;
-  const timeoutMs = options.timeoutMs || DEFAULT_TIMEOUT_MS;
+  const primaryModel = options.model || process.env.GEMINI_MODEL || DEFAULT_MODEL;
+  const fallbackModel = options.fallbackModel || process.env.GEMINI_FALLBACK_MODEL || null;
+  const callTimeoutMs = options.timeoutMs || DEFAULT_CALL_TIMEOUT_MS;
+  const overallBudgetMs = options.overallBudgetMs || DEFAULT_OVERALL_BUDGET_MS;
+  const retryDelays = options.retryDelays || DEFAULT_RETRY_DELAYS;
+
+  const deadline = Date.now() + overallBudgetMs;
 
   // Truncate submission if needed
   let safeContent = String(submissionContent || '');
@@ -178,10 +187,17 @@ ${endDelimiter}`;
     },
   };
 
-  const endpoint = `${GEMINI_API_BASE}/${encodeURIComponent(model)}:generateContent`;
+  const makeSingleCall = async (modelToUse) => {
+    const remainingBudget = deadline - Date.now();
+    if (remainingBudget <= 0) {
+      const budgetErr = new Error('Overall verification time budget exceeded.');
+      budgetErr.isTemporary = true;
+      throw budgetErr;
+    }
 
-  // Helper to execute request with timeout and error mapping
-  const executeCall = async () => {
+    const effectiveTimeoutMs = Math.max(100, Math.min(callTimeoutMs, remainingBudget));
+    const endpoint = `${GEMINI_API_BASE}/${encodeURIComponent(modelToUse)}:generateContent`;
+
     const response = await fetch(endpoint, {
       method: 'POST',
       headers: {
@@ -189,78 +205,124 @@ ${endDelimiter}`;
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(requestBody),
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: AbortSignal.timeout(effectiveTimeoutMs),
     });
 
     if (!response.ok) {
       const errText = await response.text();
-      // Only treat HTTP 404 as model-not-found
-      if (response.status === 404) {
-        const error = new Error(`Model '${model}' not found (HTTP 404).`);
-        error.isModelNotFound = true;
-        error.status = 404;
-        throw error;
-      }
+      const status = response.status;
+      const error = new Error(`Gemini API HTTP ${status}: ${errText}`);
+      error.status = status;
 
-      const error = new Error(`Gemini API error (HTTP ${response.status}): ${errText}`);
-      error.status = response.status;
+      if (status === 404) {
+        error.isModelNotFound = true;
+      } else if (TEMPORARY_STATUS_CODES.has(status)) {
+        error.isTemporary = true;
+      }
       throw error;
     }
 
     const data = await response.json();
     const parts = data.candidates?.[0]?.content?.parts || [];
-
-    // Find the first part with text that is not a thought part
     const validPart = parts.find((part) => part.text && !part.thought);
     if (!validPart || !validPart.text) {
-      throw new Error('Gemini API returned an empty or invalid candidate.');
+      const err = new Error('Gemini API returned an empty or invalid candidate.');
+      err.isTemporary = true;
+      throw err;
     }
 
-    return JSON.parse(validPart.text);
+    try {
+      return JSON.parse(validPart.text);
+    } catch (parseErr) {
+      const jsonErr = new Error(`Failed to parse model JSON: ${parseErr.message}`);
+      jsonErr.isParseError = true;
+      throw jsonErr;
+    }
   };
 
-  // Attempt call with 1 retry
   let parsedResult = null;
   let lastError = null;
+  let unparseableCount = 0;
+  let primaryFailedWith404 = false;
 
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  // Primary model execution loop: up to 3 attempts
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    if (Date.now() >= deadline) {
+      const budgetErr = new Error('Overall verification time budget exceeded.');
+      budgetErr.isTemporary = true;
+      lastError = budgetErr;
+      break;
+    }
+
     try {
-      parsedResult = await executeCall();
+      parsedResult = await makeSingleCall(primaryModel);
       break;
     } catch (err) {
       lastError = err;
+
+      // 404 on primary model
       if (err.isModelNotFound) {
-        return {
-          requirements: [],
-          confidence: 0.0,
-          decision: 'needs_review',
-          modelDecision: 'needs_review',
-          reason: `Model '${model}' was not found.`,
-          feedback: `Model configuration error: Model '${model}' not found on the Gemini API. Please check GEMINI_MODEL.`,
-          serviceError: true,
-        };
+        primaryFailedWith404 = true;
+        break;
       }
 
-      // If rate limited (HTTP 429), wait 2 seconds; otherwise wait 500ms
-      if (attempt === 1) {
-        const delayMs = err.status === 429 ? 2000 : 500;
+      // If error has an HTTP status and is NOT temporary (e.g. 400, 401, 403), stop retrying
+      if (err.status && !err.isTemporary) {
+        break;
+      }
+
+      // Single retry for unparseable JSON
+      if (err.isParseError) {
+        unparseableCount++;
+        if (unparseableCount > 1) {
+          break;
+        }
+      }
+
+      // If temporary or network error, wait before retry if within attempt budget
+      if (attempt < 3 && Date.now() < deadline) {
+        const delayMs = retryDelays[attempt - 1] ?? 1000;
         await new Promise((res) => setTimeout(res, delayMs));
       }
     }
   }
 
-  if (!parsedResult) {
-    // Log full error without logging the API key or raw submission
-    console.error(`AI Verifier execution error (model: ${model}):`, lastError?.message || lastError);
+  // Fallback model execution if primary failed with temporary error or 404
+  if (!parsedResult && fallbackModel && (lastError?.isTemporary || primaryFailedWith404 || !lastError?.status)) {
+    if (Date.now() < deadline) {
+      try {
+        parsedResult = await makeSingleCall(fallbackModel);
+      } catch (fbErr) {
+        lastError = fbErr;
+      }
+    }
+  }
 
-    const safeErrorSnippet = String(lastError?.message || 'Unknown verification error').slice(0, 150);
+  // Handle failure
+  if (!parsedResult) {
+    console.error(`AI Verifier execution error (primary: ${primaryModel}, fallback: ${fallbackModel || 'none'}):`, lastError?.message || lastError);
+
+    // Only return model configuration error if the PRIMARY model returned 404
+    if (primaryFailedWith404) {
+      return {
+        requirements: [],
+        confidence: 0.0,
+        decision: 'needs_review',
+        modelDecision: 'needs_review',
+        reason: `Model '${primaryModel}' was not found.`,
+        feedback: `Model configuration error: Model '${primaryModel}' not found on the Gemini API. Please check GEMINI_MODEL.`,
+        serviceError: true,
+      };
+    }
+
+    // Default friendly response for temporary overload or general failure (never raw API JSON)
     return {
       requirements: [],
       confidence: 0.0,
       decision: 'needs_review',
       modelDecision: 'needs_review',
-      reason: 'AI verification failed or encountered an error.',
-      feedback: `AI verification could not be completed: ${safeErrorSnippet}.${truncationNote}`,
+      reason: 'AI verifier is temporarily overloaded or unavailable.',
+      feedback: `The AI verifier is temporarily busy. Please retry in a minute.${truncationNote}`,
       serviceError: true,
     };
   }
@@ -302,4 +364,3 @@ ${endDelimiter}`;
     serviceError: false,
   };
 }
-
