@@ -1,7 +1,7 @@
 # MilestonePay Agent
 
 Freelancers frequently struggle with unpaid invoices and delayed releases after completing work, while clients face the risk of paying upfront for deliverables that fail to satisfy project requirements. MilestonePay Agent solves this double-sided friction with an automated escrow-style hold where clients fund milestones via PayPal authorizations, freelancers submit proof of work, an AI agent (Google Gemini) checks the submission against explicit acceptance criteria, and PayPal captures and releases funds automatically upon approval.
-
+Everything runs in the PayPal sandbox with test money. No real money is involved.
 Demo video: link added at submission
 
 ## Highlights

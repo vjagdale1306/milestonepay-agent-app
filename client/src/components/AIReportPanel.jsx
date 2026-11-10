@@ -47,7 +47,11 @@ export function AIReportPanel({ verifications = [] }) {
             <div className="row" style={{ justifyContent: 'space-between', marginBottom: '0.75rem' }}>
               <div className="row" style={{ gap: '0.5rem' }}>
                 <span style={{ fontSize: '0.8rem', fontWeight: 600 }}>Decision:</span>
-                <DecisionBadge decision={v.decision} />
+                {v.service_error ? (
+                  <span className="badge badge-pending_funding">Unavailable</span>
+                ) : (
+                  <DecisionBadge decision={v.decision} />
+                )}
                 {index === 0 && (
                   <span className="badge" style={{ backgroundColor: '#e2e8f0', color: '#475569' }}>
                     Latest

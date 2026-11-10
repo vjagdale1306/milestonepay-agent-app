@@ -268,7 +268,7 @@ export function MilestoneCard({ milestone, role, onRefresh }) {
           {approvalUrl ? (
             <div className="stack" style={{ gap: '0.75rem' }}>
               <div className="alert-info" style={{ fontSize: '0.85rem' }}>
-                Order created! Please approve authorization on PayPal, then click confirm.
+                Order created! Please approve authorization on PayPal, then click confirm. After you approve, PayPal shows a blank example.com page. That is expected. Close that tab, come back here and click confirm. In the sandbox, log in with the Personal (buyer) account.
               </div>
               <div className="row">
                 <a
